@@ -135,6 +135,30 @@ def validate_slurm_extra(job):
             )
 
 
+def validate_explicit_memory(job, reject_explicit_memory=False):
+    """Reject explicit memory requests when cluster policy derives memory."""
+    if not reject_explicit_memory:
+        return
+
+    offending_resources = [
+        name
+        for name in ("mem_mb", "mem_mb_per_cpu")
+        if job.resources.get(name) is not None
+    ]
+    slurm_extra = job.resources.get("slurm_extra")
+    if slurm_extra and re.search(r"--mem(?:-per-cpu)?(?:=|\s)", slurm_extra):
+        offending_resources.append("slurm_extra")
+
+    if offending_resources:
+        rule_name = getattr(job, "name", "<unknown>")
+        fields = ", ".join(offending_resources)
+        raise WorkflowError(
+            f"Explicit SLURM memory is disabled for rule '{rule_name}' by "
+            f"reject_explicit_memory; remove: {fields}. Memory on this cluster "
+            "is derived from the requested CPU allocation."
+        )
+
+
 def validate_status_command_settings(settings, logger):
     """Emit warnings about status_command sensibility."""
     if not hasattr(settings, "status_command"):

@@ -66,6 +66,7 @@ from .partitions import (
     get_best_partition,
 )
 from .validation import (
+    validate_explicit_memory,
     validate_or_get_slurm_job_id,
     validate_slurm_extra,
     validate_executor_settings,
@@ -216,6 +217,17 @@ class ExecutorSettings(ExecutorSettingsBase):
             "env_var": False,
             "required": False,
             "type": _parse_bool,
+        },
+    )
+
+    reject_explicit_memory: bool = field(
+        default=False,
+        metadata={
+            "help": "Reject jobs that request mem_mb, mem_mb_per_cpu, or pass "
+            "an explicit SLURM memory option. This supports clusters where memory "
+            "is derived from CPU allocation and must not be requested directly.",
+            "env_var": False,
+            "required": False,
         },
     )
 
@@ -845,6 +857,10 @@ class Executor(RemoteExecutor):
                 comment_str = f"rule_{jobs[0].name}_wildcards_{wildcard_strs[0]}"
 
             for job in jobs:
+                validate_explicit_memory(
+                    job,
+                    self.workflow.executor_settings.reject_explicit_memory,
+                )
                 # check whether the 'slurm_extra' parameter is used correctly
                 # prior to putatively setting in the sbatch call
                 validate_slurm_extra(job)
@@ -1101,6 +1117,10 @@ class Executor(RemoteExecutor):
                 comment_str = f"rule_{job.name}_wildcards_{wildcard_str}"
             # check whether the 'slurm_extra' parameter is used correctly
             # prior to putatively setting in the sbatch call
+            validate_explicit_memory(
+                job,
+                self.workflow.executor_settings.reject_explicit_memory,
+            )
             validate_slurm_extra(job)
 
             # NOTE removed partition from below, such that partition

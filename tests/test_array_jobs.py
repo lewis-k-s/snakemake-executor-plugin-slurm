@@ -100,6 +100,7 @@ def _make_executor_stub(array_jobs=None, array_limit=100):
         executor_settings=SimpleNamespace(
             array_limit=array_limit,
             array_memory_fudge=True,
+            reject_explicit_memory=False,
             status_attempts=1,
             init_seconds_before_status_checks=40,
             keep_successful_logs=False,
@@ -144,6 +145,11 @@ class TestArrayJobsSettings:
     @pytest.mark.parametrize("value", ["true", "True", "1", "yes", "on"])
     def test_array_memory_fudge_parser_accepts_true_values(self, value):
         assert _parse_bool(value) is True
+
+    def test_reject_explicit_memory_defaults_to_false(self):
+        """Explicit-memory policy is opt-in for compatibility."""
+        settings = ExecutorSettings()
+        assert settings.reject_explicit_memory is False
 
     def test_array_jobs_none_yields_empty_set_on_executor(self):
         """Executor with array_jobs=None initialises self.array_jobs as empty set."""
@@ -312,6 +318,17 @@ class TestRunJobErrorHandling:
         assert submitted_info.job == job
         assert "account lookup failed" in message
 
+    def test_run_job_rejects_explicit_memory_before_submission(self):
+        executor = _make_executor_stub()
+        executor.workflow.executor_settings.reject_explicit_memory = True
+        job = _make_mock_job(rule_name="myrule", mem_mb=1024)
+
+        executor.run_job(job)
+
+        executor._report_job_error_threadsafe.assert_called_once()
+        message = executor._report_job_error_threadsafe.call_args[0][1]
+        assert "Explicit SLURM memory is disabled" in message
+
 
 class TestRunArrayJobs:
     """Tests for run_array_jobs: sbatch command structure, chunking, error handling."""
@@ -398,9 +415,7 @@ class TestRunArrayJobs:
         assert "2" in array_execs
         assert "3" in array_execs
 
-    def test_array_memory_fudge_can_be_disabled(
-        self, tmp_path, mock_popen_success
-    ):
+    def test_array_memory_fudge_can_be_disabled(self, tmp_path, mock_popen_success):
         executor = self._build_executor(tmp_path)
         executor.workflow.executor_settings.array_memory_fudge = False
         jobs = self._make_jobs(n=2)
@@ -421,6 +436,34 @@ class TestRunArrayJobs:
 
         popen_call_str = mock_popen_success.call_args_list[0][0][0]
         assert "--mem 1" in popen_call_str
+
+    @pytest.mark.parametrize(
+        "resources",
+        [
+            {"mem_mb": 1024},
+            {"mem_mb_per_cpu": 256},
+            {"slurm_extra": "--mem=1024"},
+            {"slurm_extra": "--mem-per-cpu 256"},
+        ],
+    )
+    def test_array_rejects_explicit_memory_before_submission(self, tmp_path, resources):
+        executor = self._build_executor(tmp_path)
+        executor.workflow.executor_settings.reject_explicit_memory = True
+        jobs = [
+            _make_mock_job(rule_name="myrule", jobid=jobid, **resources)
+            for jobid in (1, 2)
+        ]
+
+        with patch("snakemake_executor_plugin_slurm.subprocess.Popen") as popen:
+            executor.run_array_jobs(jobs)
+
+        popen.assert_not_called()
+        assert executor._report_job_error_threadsafe.call_count == 2
+        messages = [
+            call.args[1]
+            for call in executor._report_job_error_threadsafe.call_args_list
+        ]
+        assert all("Explicit SLURM memory is disabled" in msg for msg in messages)
 
     def test_array_execs_omits_first_task_of_each_chunk(self, tmp_path):
         """For each chunk, first task uses base exec command and is absent from map."""
